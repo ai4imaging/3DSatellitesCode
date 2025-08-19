@@ -48,19 +48,6 @@ def getWorld2View2(R, t, translate=np.array([.0, .0, .0]), scale=1.0):
     Rt = np.linalg.inv(C2W)
     return np.float32(Rt)
 
-# get R and T from world2view
-def getRt(c2w):
-    c2w[:3, 1:3] *= -1
-    world2view = np.linalg.inv(c2w)
-    return world2view[:3, :3].transpose(), world2view[:3, 3]
-
-def get_c2w(R, T):
-    w2c = getWorld2View(R, T)
-    w2c[:3, :3] = w2c[:3, :3].transpose(0, 1)
-    c2w_ = np.linalg.inv(w2c)
-    c2w_[:3, 1:3] *= -1
-    return c2w_
-
 def getProjectionMatrix(znear, zfar, fovX, fovY):
     tanHalfFovY = math.tan((fovY / 2))
     tanHalfFovX = math.tan((fovX / 2))

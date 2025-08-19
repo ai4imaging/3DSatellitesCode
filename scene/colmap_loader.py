@@ -136,12 +136,10 @@ def read_points3D_binary(path_to_model_file):
         xyzs = np.empty((num_points, 3))
         rgbs = np.empty((num_points, 3))
         errors = np.empty((num_points, 1))
-        ids = np.empty((num_points, 1))
 
         for p_id in range(num_points):
             binary_point_line_properties = read_next_bytes(
                 fid, num_bytes=43, format_char_sequence="QdddBBBd")
-            points_id = np.array(binary_point_line_properties[0])
             xyz = np.array(binary_point_line_properties[1:4])
             rgb = np.array(binary_point_line_properties[4:7])
             error = np.array(binary_point_line_properties[7])
@@ -153,8 +151,7 @@ def read_points3D_binary(path_to_model_file):
             xyzs[p_id] = xyz
             rgbs[p_id] = rgb
             errors[p_id] = error
-            ids[p_id] = points_id
-    return xyzs, rgbs, ids
+    return xyzs, rgbs, errors
 
 def read_intrinsics_text(path):
     """
@@ -295,52 +292,3 @@ def read_colmap_bin_array(path):
         array = np.fromfile(fid, np.float32)
     array = array.reshape((width, height, channels), order="F")
     return np.transpose(array, (1, 0, 2)).squeeze()
-
-def read_images_binary(path_to_model_file):
-    """
-    see: src/colmap/scene/reconstruction.cc
-        void Reconstruction::ReadImagesBinary(const std::string& path)
-        void Reconstruction::WriteImagesBinary(const std::string& path)
-    """
-    images = {}
-    with open(path_to_model_file, "rb") as fid:
-        num_reg_images = read_next_bytes(fid, 8, "Q")[0]
-        for _ in range(num_reg_images):
-            binary_image_properties = read_next_bytes(
-                fid, num_bytes=64, format_char_sequence="idddddddi"
-            )
-            image_id = binary_image_properties[0]
-            qvec = np.array(binary_image_properties[1:5])
-            tvec = np.array(binary_image_properties[5:8])
-            camera_id = binary_image_properties[8]
-            binary_image_name = b""
-            current_char = read_next_bytes(fid, 1, "c")[0]
-            while current_char != b"\x00":  # look for the ASCII 0 entry
-                binary_image_name += current_char
-                current_char = read_next_bytes(fid, 1, "c")[0]
-            image_name = binary_image_name.decode("utf-8")
-            num_points2D = read_next_bytes(
-                fid, num_bytes=8, format_char_sequence="Q"
-            )[0]
-            x_y_id_s = read_next_bytes(
-                fid,
-                num_bytes=24 * num_points2D,
-                format_char_sequence="ddq" * num_points2D,
-            )
-            xys = np.column_stack(
-                [
-                    tuple(map(float, x_y_id_s[0::3])),
-                    tuple(map(float, x_y_id_s[1::3])),
-                ]
-            )
-            point3D_ids = np.array(tuple(map(int, x_y_id_s[2::3])))
-            images[image_id] = Image(
-                id=image_id,
-                qvec=qvec,
-                tvec=tvec,
-                camera_id=camera_id,
-                name=image_name,
-                xys=xys,
-                point3D_ids=point3D_ids,
-            )
-    return images
