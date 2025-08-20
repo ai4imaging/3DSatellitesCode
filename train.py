@@ -173,6 +173,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
 
+            #
+            if iteration >= 1000 and iteration < 12000 and (iteration + 1) % 5000 == 0:
+                gaussians.refine()
+            #
+            if iteration == 29500:
+                gaussians.refine()
+                scene.save(iteration + 1)
+
             # Optimizer step
             if iteration < opt.iterations:
                 gaussians.exposure_optimizer.step()

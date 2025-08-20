@@ -21,6 +21,7 @@ from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
+import open3d as o3d
 
 try:
     from diff_gaussian_rasterization import SparseGaussianAdam
@@ -255,6 +256,19 @@ class GaussianModel:
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
 
+
+    def refine(self):
+        xyz = self._xyz.detach().cpu().numpy()
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(xyz)
+        _, ind = pcd.remove_statistical_outlier(nb_neighbors=5, std_ratio=0.2)#css
+        # _, ind = pcd.remove_statistical_outlier(nb_neighbors=10, std_ratio=10)
+        all_indices = np.arange(xyz.shape[0])
+        removal_mask = np.zeros(xyz.shape[0], dtype=bool)
+        removal_mask[np.setdiff1d(all_indices, ind)] = True
+        self.prune_points(removal_mask)
+        return
+
     def reset_opacity(self):
         opacities_new = self.inverse_opacity_activation(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
@@ -361,7 +375,8 @@ class GaussianModel:
 
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
-        self.tmp_radii = self.tmp_radii[valid_points_mask]
+        if self.tmp_radii is not None:
+            self.tmp_radii = self.tmp_radii[valid_points_mask]
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
