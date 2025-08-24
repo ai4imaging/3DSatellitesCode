@@ -8,8 +8,57 @@ This project implements an algorithm for 3D reconstruction of satellites using d
 
 ## Features
 - Joint optimization of camera poses and 3D reconstruction.
+- Preceding **pose estimation pipeline** with:
+  1. **Feature Extraction & Matching** ([Hierarchical-Localization](https://github.com/cvg/Hierarchical-Localization))  
+  2. **Orthogonal Model Initialization** ([OrthoPose](https://www.ipol.im/pub/art/2019/248/?utm_source=doi))  
+  3. **Incremental SfM Reconstruction**  
 - Implementation based on the 3D Gaussian Splatting framework.
 - Support for both simulated and real-world datasets.
+
+## Pose Estimation Pipeline
+
+Before running the Gaussian Splatting stage, camera poses are estimated through a **three-step pipeline**:
+
+### 1. Feature Point Extraction and Matching (Hierarchical-Localization)
+- Install environment following the [Hierarchical-Localization repo](https://github.com/cvg/Hierarchical-Localization).  
+- Modify the image directory in `test.py`:
+  ```python
+  images = Path('datasets/simu1')
+  ```
+- Run feature extraction and matching:
+  ```bash
+  python test.py
+  ```
+- Outputs include:
+  - `01.txt`, `02.txt`, `12.txt` (pairwise matches)  
+  - `features.pkl`, `keypoints.pkl`, `matches.pkl`  
+- Copy these files into the **OrthoPose** module folder.
+
+---
+
+### 2. Orthogonal Model Initialization (OrthoPose)
+- Follow the [OrthoPose repository](https://www.ipol.im/pub/art/2019/248/?utm_source=doi) for environment setup.  
+- Modify dataset paths in `example.m` and `mainPoseEstimation.m` (e.g., replace `simu2/` with the directory from step 1).  
+- Run:
+  ```matlab
+  example.m
+  ```
+- Outputs include:
+  - `corr.csv` (correspondences)  
+  - `camera.csv` (initial camera parameters)  
+  - `points.csv` (initial 3D points)  
+- Copy these files into the **SfM** module folder.
+
+---
+
+### 3. Incremental Reconstruction (SfM)
+- Using the outputs above, select the corresponding Python script (`sfm_css`, `sfm_iss`, or `sfm_simu1-3`).  
+- Each script has minimal configuration differences. Run the chosen script to obtain:
+  - `optimized_points_3d.npy`  
+  - `optimized_camera.npy`  
+- These represent the refined camera poses and sparse 3D points.  
+- Finally, use the `create_json` function to convert the results into a **NeRF-compatible dataset** for Gaussian Splatting.
+
 
 ## Installation
 The environment setup can follow the instructions from the [3D Gaussian Splatting repository](https://github.com/graphdeco-inria/gaussian-splatting) or use the provided `requirements.txt` file.
