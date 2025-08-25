@@ -15,6 +15,30 @@ This project implements an algorithm for 3D reconstruction of satellites using d
 - Implementation based on the 3D Gaussian Splatting framework.
 - Support for both simulated and real-world datasets.
 
+## Data Preprocessing
+
+Before pose estimation and 3D reconstruction, the raw telescope images and videos undergo a **data preprocessing pipeline** to improve quality and robustness. This step significantly reduces noise, corrects distortions, and enhances fine details.
+
+### 1. Image Stacking (AutoStakkert)
+- Tool: [AutoStakkert](https://www.astrokraai.nl/software/latest.php)  
+- Purpose: Align and stack multiple frames of the same satellite image.  
+- Benefit: Effectively reduces random noise and mitigates atmospheric turbulence effects, resulting in a sharper and more stable image.
+
+### 2. Image Enhancement (RegiStax)
+- Tool: [RegiStax](https://www.astronomie.be/registax/)  
+- Purpose: Apply wavelet-based sharpening and contrast enhancement.  
+- Benefit: Highlights structural details of the satellite and improves feature visibility for the downstream pose estimation module.
+
+### 3. Video Denoising (VRT)
+- Tool: [VRT - Video Restoration Transformer](https://github.com/JingyunLiang/VRT)  
+- Purpose: Perform deep-learning-based video denoising and restoration.  
+- Benefit: Produces cleaner video sequences with reduced noise, which helps in maintaining temporal consistency across frames.
+
+---
+
+This preprocessing pipeline ensures that the data fed into the **pose estimation** and **3D reconstruction** stages is of the highest possible quality, improving the reliability of both feature extraction and final 3D reconstruction.
+
+
 ## Pose Estimation Pipeline
 
 Before running the Gaussian Splatting stage, camera poses are estimated through a **three-step pipeline**:
