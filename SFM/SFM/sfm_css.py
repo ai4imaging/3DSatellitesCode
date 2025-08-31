@@ -289,7 +289,6 @@ def compute_camera_direction_angle(c2w1, c2w2, in_degrees=True):
 def test():
     camera = np.load('data_css/optimized_camera.npy')
     points_3d = np.load('data_css/optimized_points_3d.npy')
-    c2ws = np.load('data_css/c2ws_fined.npy')
     cameras = to_c2w(camera)
     # cameras = np.concatenate([c2ws, cameras], 0)
     camera_t = cameras[:, :3, 3]
@@ -525,7 +524,7 @@ if __name__ == '__main__':
     # pose_init()
     # pose_refine()
     # test_lego()
-    main()
+    # main()
     test()
     # test_ba_project()
 

@@ -490,7 +490,7 @@ def test_ba_project():
 
 
 if __name__ == '__main__':
-    # main()
+    main()
     test()
     # test_projection()
     # test_ba_project()
