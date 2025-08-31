@@ -5,7 +5,7 @@ channels:
   - defaults
 dependencies:
   - cudatoolkit=11.6
-  - plyfile
+  - plyfile=0.8.1
   - python=3.7.13
   - pip=22.3.1
   - pytorch=1.12.1
@@ -15,9 +15,3 @@ dependencies:
   - pip:
     - submodules/diff-gaussian-rasterization
     - submodules/simple-knn
-    - submodules/fused-ssim
-    - opencv-python
-    - joblib
-    - open3d
-    - lpips
-    

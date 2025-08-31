@@ -227,7 +227,7 @@ def main():
     #
     # sfm.test_add()
     # exit(0)
-    for i in range(2, 13):
+    for i in range(2, 11):
         sfm.add_camera(i, i+1)
     sfm.visualize()
 
@@ -291,8 +291,8 @@ def to_c2w(R_t_batch):
 
 
 def test():
-    camera = np.load('data_iss_back/optimized_camera.npy')
-    points_3d = np.load('data_iss_back/optimized_points_3d.npy')
+    camera = np.load('data_iss/optimized_camera.npy')
+    points_3d = np.load('data_iss/optimized_points_3d.npy')
 
     # visualization(to_c2w(camera), points_3d)
 
@@ -304,10 +304,12 @@ def test():
     distance = np.linalg.norm(point_mean - camera_t, axis=1)
     print(distance)
 
-    visualization(cameras, points_3d)
+    # visualization(cameras, points_3d)
     frame_ids = [f"frame{i:03}" for i in range(0, 120, 10)]
     frame_ids = sorted(frame_ids)
     create_json(cameras.tolist(), frame_ids, 0.1497196954215337, 'data_iss/transforms_train.json')
+    create_json(cameras.tolist(), frame_ids, 0.1497196954215337, 'data_iss/transforms_test.json')
+    create_json(cameras.tolist(), frame_ids, 0.1497196954215337, 'data_iss/transforms_val.json')
 
 
 def triangulate_points(R1, t1, K1, R2, t2, K2, pts1, pts2):
@@ -488,8 +490,8 @@ def test_ba_project():
 
 
 if __name__ == '__main__':
-    test()
     # main()
+    test()
     # test_projection()
     # test_ba_project()
 # retval, rvec, tvec = cv2.solvePnP(points_3d, corr[:,4:6], np.array(K), None)

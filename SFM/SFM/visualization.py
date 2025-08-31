@@ -593,8 +593,8 @@ def visualization(camera, points_3d, grad_color=True):
     points_3d = points_3d
 
     '''Frustum properties'''
-    ff = 500
-    fs = 2
+    ff = 4000
+    fs = 1
 
     random_color = False
     if random_color:
@@ -640,6 +640,8 @@ def visualization(camera, points_3d, grad_color=True):
         pcd.colors = o3d.utility.Vector3dVector(colors)
         vis.add_geometry(pcd)
     vis.add_geometry(frustum_est_list)
+    opt = vis.get_render_option()
+    opt.background_color = np.asarray([0, 0, 0])
     # vis.add_geometry(coordinate_frame)
     # 运行Visualizer
     vis.run()

@@ -10,44 +10,35 @@
 #
 
 import os
+import random
+import time
 import torch
+import numpy as np
+from PIL import Image
 from random import randint
+from scene.cameras import Camera
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
-from utils.general_utils import safe_state, get_expon_lr_func
+from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+from utils.graphics_utils import getRt, get_c2w
+from scipy.spatial.transform import Rotation as R, Slerp
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
 
-try:
-    from fused_ssim import fused_ssim
-    FUSED_SSIM_AVAILABLE = True
-except:
-    FUSED_SSIM_AVAILABLE = False
-
-try:
-    from diff_gaussian_rasterization import SparseGaussianAdam
-    SPARSE_ADAM_AVAILABLE = True
-except:
-    SPARSE_ADAM_AVAILABLE = False
-
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
-
-    if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
-        sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
-
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
-    gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
+    gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
     if checkpoint:
@@ -60,16 +51,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
 
-    use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE 
-    depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
-
-    viewpoint_stack = scene.getTrainCameras().copy()
-    viewpoint_indices = list(range(len(viewpoint_stack)))
+    viewpoint_stack = None
     ema_loss_for_log = 0.0
-    ema_Ll1depth_for_log = 0.0
-
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
+    # rate = 0.1
+    rate = 0.005
+    css_center = gaussians.get_xyz.data.mean(0).detach().cpu().numpy()
+    css_radius = np.sqrt(np.sum((gaussians.get_xyz.data.detach().cpu().numpy() - css_center) ** 2, axis=1)).max() * 1.2
+    print('css_center: ', css_center, css_radius)
+    start_time = time.time()
     for iteration in range(first_iter, opt.iterations + 1):
         if network_gui.conn == None:
             network_gui.try_connect()
@@ -78,7 +69,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 net_image_bytes = None
                 custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
                 if custom_cam != None:
-                    net_image = render(custom_cam, gaussians, pipe, background, scaling_modifier=scaling_modifer, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)["render"]
+                    net_image = render(custom_cam, gaussians, pipe, background, scaling_modifer)["render"]
                     net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
                 network_gui.send(net_image_bytes, dataset.source_path)
                 if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
@@ -90,17 +81,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         gaussians.update_learning_rate(iteration)
 
-        # Every 1000 its we increase the levels of SH up to a maximum degree
-        if iteration % 1000 == 0:
-            gaussians.oneupSHdegree()
-
         # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
-            viewpoint_indices = list(range(len(viewpoint_stack)))
-        rand_idx = randint(0, len(viewpoint_indices) - 1)
-        viewpoint_cam = viewpoint_stack.pop(rand_idx)
-        vind = viewpoint_indices.pop(rand_idx)
+            viewpoint_stack = random.sample(viewpoint_stack, 4)
+            viewpoint_stack = viewpoint_stack + viewpoint_stack + viewpoint_stack
+        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
 
         # Render
         if (iteration - 1) == debug_from:
@@ -108,57 +94,66 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-
-        if viewpoint_cam.alpha_mask is not None:
-            alpha_mask = viewpoint_cam.alpha_mask.cuda()
-            image *= alpha_mask
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
-        if FUSED_SSIM_AVAILABLE:
-            ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
-        else:
-            ssim_value = ssim(image, gt_image)
-
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
-
-        # Depth regularization
-        Ll1depth_pure = 0.0
-        if depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable:
-            invDepth = render_pkg["depth"]
-            mono_invdepth = viewpoint_cam.invdepthmap.cuda()
-            depth_mask = viewpoint_cam.depth_mask.cuda()
-
-            Ll1depth_pure = torch.abs((invDepth  - mono_invdepth) * depth_mask).mean()
-            Ll1depth = depth_l1_weight(iteration) * Ll1depth_pure 
-            loss += Ll1depth
-            Ll1depth = Ll1depth.item()
-        else:
-            Ll1depth = 0
-
+        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         loss.backward()
 
         iter_end.record()
 
+
+        if iteration % 500 == 0 and iteration>=2000 and iteration < 8000:
+
+            cam_trains = scene.getTrainCameras().copy()
+
+            for cam_id, cam_ in enumerate(cam_trains):
+                with torch.no_grad():
+                    render_pkg = render(cam_, gaussians, pipe, bg)
+                    im = render_pkg["render"]
+                    gt_image = cam_.original_image.cuda()
+                    L1_ = (1.0 - opt.lambda_dssim) * l1_loss(im, gt_image) + opt.lambda_dssim * (
+                                1.0 - ssim(im, gt_image))
+                    ls_ = L1_
+                    # print('Loss:',cam_.image_name, L1_.item())
+
+                    c2w_ = get_c2w(cam_.R, cam_.T)
+                    c2ws = generate_complete_c2w_matrices(c2w_, rate, rate, rate, 200)
+                    cam_back = None
+
+                    for i, c2w in enumerate(c2ws):
+                        R, T = getRt(c2w)
+                        cam = Camera(0, R, T, cam_.FoVx, cam_.FoVx, cam_.original_image,
+                                     None, cam_.image_name, cam_.uid)
+                        render_pkg = render(cam, gaussians, pipe, bg)
+                        image = render_pkg["render"]
+
+                        L1 = (1.0 - opt.lambda_dssim) * l1_loss(image, gt_image) + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+                        ls = L1
+
+                        if ls < ls_:
+                            ls_ = ls
+                            cam_back = cam
+
+                    if cam_back is not None:
+                        scene.replaceCameras(cam_, cam_back)
+                        print('Replaced',cam_.image_name, ls)
+        if iteration % 3000 == 0:
+            rate = rate/2
         with torch.no_grad():
             # Progress bar
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
-            ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
-
             if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}"})
+                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}"})
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
 
             # Log and save
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp), dataset.train_test_exp)
-            if (iteration in saving_iterations):
-                print("\n[ITER {}] Saving Gaussians".format(iteration))
-                scene.save(iteration)
+            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
 
             # Densification
             if iteration < opt.densify_until_iter:
@@ -167,12 +162,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold, radii)
+                    size_threshold = 2 if iteration > opt.opacity_reset_interval else None
+                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
-
             #
             if iteration >= 1000 and iteration < 12000 and (iteration + 1) % 5000 == 0:
                 gaussians.refine()
@@ -181,21 +175,79 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 gaussians.refine()
                 scene.save(iteration + 1)
 
+            if (iteration in saving_iterations):
+                print("\n[ITER {}] Saving Gaussians".format(iteration))
+                os.makedirs('log', exist_ok=True)
+                for cam in scene.getTrainCameras():
+                    render_pkg = render(cam, gaussians, pipe, bg)
+                    image = render_pkg["render"]
+                    image = np.clip(image.detach().cpu().numpy(), 0, 1)
+                    image_array = (image * 255).astype(np.uint8)
+                    image_array = np.transpose(image_array, (1, 2, 0))
+                    im = Image.fromarray(image_array)
+                    im.save('log/raw' +str(iteration)+"_"+ str(cam.image_name)  + ".png")
+                scene.save(iteration)
+
             # Optimizer step
             if iteration < opt.iterations:
-                gaussians.exposure_optimizer.step()
-                gaussians.exposure_optimizer.zero_grad(set_to_none = True)
-                if use_sparse_adam:
-                    visible = radii > 0
-                    gaussians.optimizer.step(visible, radii.shape[0])
-                    gaussians.optimizer.zero_grad(set_to_none = True)
-                else:
-                    gaussians.optimizer.step()
-                    gaussians.optimizer.zero_grad(set_to_none = True)
+                gaussians.optimizer.step()
+                gaussians.optimizer.zero_grad(set_to_none = True)
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+
+    end_time = time.time()
+    print('gaussian number:', gaussians.get_xyz.shape[0])
+    print('Time:', (end_time - start_time)/60, 'min')
+
+
+def generate_complete_c2w_matrices(base_c2w, vertical_dist_coeff, parallel_dist_coeff, orientation_noise,num_matrices):
+    def move_camera(base_c2w, vertical_dist_coeff, parallel_dist_coeff):
+        rotation_matrix = base_c2w[:3, :3]
+        forward_vector = -rotation_matrix[:, 2]
+        right_vector = rotation_matrix[:, 0]
+        up_vector = rotation_matrix[:, 1]
+
+        # 计算垂直和平行方向的移动
+        vertical_movement = forward_vector * vertical_dist_coeff * np.random.uniform(-1, 1)
+        parallel_movement = (right_vector * np.random.uniform(-1, 1) +
+                             up_vector * np.random.uniform(-1, 1)) * parallel_dist_coeff
+
+        # 计算新的位置
+        new_position = base_c2w[:3, 3] + vertical_movement + parallel_movement
+
+        # 构造新的 c2w 矩阵，保持旋转矩阵不变，仅更新位置
+        new_c2w = np.zeros_like(base_c2w)
+        new_c2w[:3, :3] = rotation_matrix
+        new_c2w[:3, 3] = new_position
+        new_c2w[3, 3] = 1
+
+        return new_c2w
+
+    def add_orientation_noise(rotation_matrix, orientation_noise):
+        if orientation_noise > 0:
+            # 随机生成旋转轴和旋转角度
+            axis = np.random.randn(3)
+            axis /= np.linalg.norm(axis)
+            angle = np.random.uniform(-orientation_noise, orientation_noise)
+            # 生成旋转并应用到原始旋转矩阵
+            noise_rotation = R.from_rotvec(axis * angle).as_matrix()
+            return rotation_matrix @ noise_rotation
+        return rotation_matrix
+
+    # 根据位置变化和朝向随机生成一组 c2w 矩阵
+    complete_c2w_matrices = []
+    for _ in range(num_matrices):
+        # 基于位置变化生成新的 c2w 矩阵
+        c2w = move_camera(base_c2w, vertical_dist_coeff, parallel_dist_coeff)
+
+        # 在原始旋转矩阵上施加朝向随机
+        c2w[:3, :3] = add_orientation_noise(c2w[:3, :3], orientation_noise)
+
+        complete_c2w_matrices.append(c2w)
+
+    return complete_c2w_matrices
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -219,7 +271,7 @@ def prepare_output_and_logger(args):
         print("Tensorboard not available: not logging progress")
     return tb_writer
 
-def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs, train_test_exp):
+def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
@@ -235,24 +287,25 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
             if config['cameras'] and len(config['cameras']) > 0:
                 l1_test = 0.0
                 psnr_test = 0.0
+                ssim_test = 0.0
                 for idx, viewpoint in enumerate(config['cameras']):
                     image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
                     gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
-                    if train_test_exp:
-                        image = image[..., image.shape[-1] // 2:]
-                        gt_image = gt_image[..., gt_image.shape[-1] // 2:]
                     if tb_writer and (idx < 5):
                         tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
                         if iteration == testing_iterations[0]:
                             tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
                     l1_test += l1_loss(image, gt_image).mean().double()
                     psnr_test += psnr(image, gt_image).mean().double()
+                    ssim_test += ssim(image, gt_image).mean().double()
                 psnr_test /= len(config['cameras'])
+                ssim_test /= len(config['cameras'])
                 l1_test /= len(config['cameras'])          
-                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
+                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test, ssim_test))
                 if tb_writer:
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
+                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - ssim', ssim_test, iteration)
 
         if tb_writer:
             tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
@@ -270,10 +323,9 @@ if __name__ == "__main__":
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[i*5000 for i in range(1, 7)]+[1, 1000, 2000, 3000])
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument('--disable_viewer', action='store_true', default=False)
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[10000,20000,30000])
     parser.add_argument("--start_checkpoint", type=str, default = None)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
@@ -284,10 +336,10 @@ if __name__ == "__main__":
     safe_state(args.quiet)
 
     # Start GUI server, configure and run training
-    if not args.disable_viewer:
-        network_gui.init(args.ip, args.port)
+    network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    cams = training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    # training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, cams)
 
     # All done
     print("\nTraining complete.")

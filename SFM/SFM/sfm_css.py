@@ -6,7 +6,7 @@ import json
 import cv2
 import open3d as o3d
 from bundle_adjustment import bundle_adjustment
-from visualization1 import visualization
+from visualization import visualization
 from bundle_adjustment import project as ba_project
 
 
@@ -299,9 +299,11 @@ def test():
     print(point_mean, distance)
     print(compute_camera_direction_angle(cameras[0], cameras[-1]))
     visualization(cameras, points_3d)
-    # frame_ids = [f"frame{i:03}" for i in range(0, 140, 10)]
-    # frame_ids = sorted(frame_ids)
-    # create_json(cameras.tolist(), frame_ids, 0.08040715440186917, 'data_css/transforms_train.json')
+    frame_ids = [f"frame{i:03}" for i in range(0, 140, 10)]
+    frame_ids = sorted(frame_ids)
+    create_json(cameras.tolist(), frame_ids, 0.08040715440186917, 'data_css/transforms_train.json')
+    create_json(cameras.tolist(), frame_ids, 0.08040715440186917, 'data_css/transforms_test.json')
+    create_json(cameras.tolist(), frame_ids, 0.08040715440186917, 'data_css/transforms_val.json')
 
 def pose_init():
     camera = np.load('data_css/optimized_camera.npy')
@@ -524,6 +526,7 @@ if __name__ == '__main__':
     # pose_refine()
     # test_lego()
     main()
+    test()
     # test_ba_project()
 
 # retval, rvec, tvec = cv2.solvePnP(points_3d, corr[:,4:6], np.array(K), None)
