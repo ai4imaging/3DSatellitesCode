@@ -33,9 +33,10 @@ confs = {
             "nms_radius": 3,
             "max_keypoints": 4096,
         },
+        # css:360 iss:640
         "preprocessing": {
             "grayscale": True,
-            "resize_max": 1024,
+            "resize_max": 360,
         },
     },
     # Resize images to 1600px even if they are originally smaller.

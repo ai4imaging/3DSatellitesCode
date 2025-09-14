@@ -178,7 +178,7 @@ class SFM:
         self.vis = vis
         np.save('data_css/optimized_camera.npy', optimized_camera)
         np.save('data_css/optimized_points_3d.npy', optimized_points_3d)
-        if m1 == 4:
+        if m1 == 4 or m1== 6:
             self.triangulate(m1, m2)
         print('Optimized completed',m1,m2)
 
@@ -524,7 +524,7 @@ if __name__ == '__main__':
     # pose_init()
     # pose_refine()
     # test_lego()
-    # main()
+    main()
     test()
     # test_ba_project()
 

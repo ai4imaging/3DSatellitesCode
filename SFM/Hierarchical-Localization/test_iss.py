@@ -4,18 +4,18 @@ from hloc import extract_features, match_features, reconstruction, visualization
 from hloc.utils import viz_3d
 import cv2
 import numpy as np
-images = Path('datasets/css')
+images = Path('datasets/iss_50')
 outputs = Path('outputs/sfm/')
 sfm_pairs = outputs / 'pairs-netvlad.txt'
 sfm_dir = outputs / 'sfm_superpoint+superglue'
 
 retrieval_conf = extract_features.confs['netvlad']
 feature_conf = extract_features.confs['superpoint_aachen']
-# matcher_conf = match_features.confs['NN-superpoint']
-matcher_conf = match_features.confs['superglue']
+matcher_conf = match_features.confs['NN-superpoint']
+# matcher_conf = match_features.confs['superglue']
 
 retrieval_path = extract_features.main(retrieval_conf, images, outputs)
-pairs_from_retrieval.main(retrieval_path, sfm_pairs, num_matched=6)
+pairs_from_retrieval.main(retrieval_path, sfm_pairs, num_matched=5)
 
 feature_path = extract_features.main(feature_conf, images, outputs)
 match_path = match_features.main(matcher_conf, sfm_pairs, feature_conf['output'], outputs)
@@ -29,6 +29,8 @@ model = reconstruction.main(sfm_dir, images, sfm_pairs, feature_path, match_path
 
 with open('matches.pkl', 'rb') as file:
     matches = pickle.load(file)
+    for item in matches:
+        print('pair', item['pair'], item['matches'].shape)
 
 with open('keypoints.pkl', 'rb') as file:
     keypoints = pickle.load(file)
@@ -109,8 +111,8 @@ with open('keypoints.pkl', 'rb') as file:
 
 import numpy as np
 
-K = np.array([[4122, 0, 180],
-              [0, 4122, 180],
+K = np.array([[4266, 0, 320],
+              [0, 4266, 320],
               [0, 0, 1]])
 
 
